@@ -1,4 +1,4 @@
-
+use std::cmp::Reverse;
 use std::fs;
 
 fn main() {
@@ -13,14 +13,14 @@ fn main() {
             for entry in entries.flatten() {
                 let path = entry.path();
 
-                if path.is_file() {
-                    if let Ok(metadata) = fs::metadata(&path) {
-                        files.push((entry.file_name(), metadata.len()));
-                    }
+                if path.is_file()
+                    && let Ok(metadata) = fs::metadata(&path)
+                {
+                    files.push((entry.file_name(), metadata.len()));
                 }
             }
 
-            files.sort_by(|a, b| b.1.cmp(&a.1));
+            files.sort_by_key(|file| Reverse(file.1));
 
             for (name, size) in files.iter().take(10) {
                 println!(
