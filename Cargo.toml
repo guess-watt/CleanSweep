@@ -4,3 +4,5 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+# Reliable, pure-Rust cryptographic SHA-256 for duplicate file verification
+sha2 = "0.10"

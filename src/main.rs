@@ -1,181 +1,310 @@
-use std::fs;
-use std::path::Path;
-
-/// Represents basic information about a scanned file.
-struct FileInfo {
-    name: String,
-    size: u64,
-}
-
-/// Converts a byte count into a human-readable string (B, KB, MB, GB, TB).
-pub fn format_size(bytes: u64) -> String {
-    const KB: f64 = 1024.0;
-    const MB: f64 = 1024.0 * KB;
-    const GB: f64 = 1024.0 * MB;
-    const TB: f64 = 1024.0 * GB;
-
-    let b = bytes as f64;
-
-    if b < KB {
-        format!("{bytes} B")
-    } else if b < MB {
-        format!("{:.2} KB", b / KB)
-    } else if b < GB {
-        format!("{:.2} MB", b / MB)
-    } else if b < TB {
-        format!("{:.2} GB", b / GB)
-    } else {
-        format!("{:.2} TB", b / TB)
-    }
-}
+use cleansweep::cli::{Command, parse_command, print_help};
+use cleansweep::scanner::{
+    ScanOptions, ScanResult, format_size, get_largest_files, scan_directory,
+};
+use cleansweep::{age, duplicates, report, types};
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    // If no argument is provided or help is requested, show usage instructions.
-    if args.len() < 2 || args[1] == "--help" || args[1] == "-h" {
-        println!("CleanSweep - Fast & Safe CLI Storage Analyzer\n");
-        println!("Usage: cleansweep <folder-path>\n");
-        println!("Examples:");
-        println!(r#"  cleansweep "C:\Users\anwin\Downloads""#);
-        println!(r#"  cleansweep ."#);
-        return;
-    }
-
-    let folder_path = &args[1];
-    let path = Path::new(folder_path);
-
-    // Validate that the path exists.
-    if !path.exists() {
-        eprintln!("Error: The path '{folder_path}' does not exist.");
-        std::process::exit(1);
-    }
-
-    // Validate that the path is a directory, not a standalone file.
-    if !path.is_dir() {
-        eprintln!("Error: The path '{folder_path}' is not a directory.");
-        std::process::exit(1);
-    }
-
-    println!("CleanSweep - Scanning: \"{folder_path}\"\n");
-
-    // Read directory entries safely.
-    let entries = match fs::read_dir(path) {
-        Ok(entries) => entries,
+    let command = match parse_command(&args) {
+        Ok(cmd) => cmd,
         Err(err) => {
-            eprintln!("Error: Cannot read directory '{folder_path}': {err}");
+            eprintln!("Error: {err}");
             std::process::exit(1);
         }
     };
 
-    let mut files: Vec<FileInfo> = Vec::new();
-    let mut skipped_symlinks: usize = 0;
-    let mut skipped_errors: usize = 0;
-
-    for entry_result in entries {
-        match entry_result {
-            Ok(entry) => {
-                match entry.file_type() {
-                    Ok(file_type) => {
-                        // Avoid following symbolic links by default
-                        if file_type.is_symlink() {
-                            skipped_symlinks += 1;
-                            continue;
-                        }
-
-                        // Collect only regular files
-                        if file_type.is_file() {
-                            match entry.metadata() {
-                                Ok(metadata) => {
-                                    let name = entry.file_name().to_string_lossy().into_owned();
-                                    files.push(FileInfo {
-                                        name,
-                                        size: metadata.len(),
-                                    });
-                                }
-                                Err(err) => {
-                                    eprintln!(
-                                        "Warning: Could not read metadata for {:?}: {err}",
-                                        entry.file_name()
-                                    );
-                                    skipped_errors += 1;
-                                }
-                            }
-                        }
-                    }
-                    Err(err) => {
-                        eprintln!(
-                            "Warning: Could not determine file type for {:?}: {err}",
-                            entry.file_name()
-                        );
-                        skipped_errors += 1;
-                    }
-                }
-            }
-            Err(err) => {
-                eprintln!("Warning: Error reading directory entry: {err}");
-                skipped_errors += 1;
-            }
+    match command {
+        Command::Help => {
+            print_help();
         }
-    }
-
-    if files.is_empty() {
-        println!("No regular files found in \"{folder_path}\".");
-    } else {
-        files.sort_by_key(|a| a.name.to_lowercase());
-
-        let total_size: u64 = files.iter().map(|f| f.size).sum();
-
-        println!("Files found ({}):", files.len());
-        for file in &files {
-            println!("{:>10}  {}", format_size(file.size), file.name);
+        Command::Scan {
+            path,
+            limit,
+            recursive,
+        } => {
+            let scan = run_scan(&path, recursive);
+            print_scan_overview(&scan, limit);
         }
-
-        println!("\nSummary:");
-        println!("  Total regular files: {}", files.len());
-        println!("  Total size:          {}", format_size(total_size));
-    }
-
-    if skipped_symlinks > 0 {
-        println!("  Skipped symbolic links: {skipped_symlinks}");
-    }
-    if skipped_errors > 0 {
-        println!("  Skipped due to errors:  {skipped_errors}");
+        Command::Largest {
+            path,
+            limit,
+            recursive,
+        } => {
+            let scan = run_scan(&path, recursive);
+            print_largest_files(&scan, limit);
+        }
+        Command::Duplicates { path, recursive } => {
+            let scan = run_scan(&path, recursive);
+            print_duplicates(&scan);
+        }
+        Command::Types { path, recursive } => {
+            let scan = run_scan(&path, recursive);
+            print_file_types(&scan);
+        }
+        Command::Old {
+            path,
+            days,
+            limit,
+            recursive,
+        } => {
+            let scan = run_scan(&path, recursive);
+            print_old_files(&scan, days, limit);
+        }
+        Command::Report {
+            path,
+            output,
+            days,
+            limit,
+            recursive,
+            force,
+        } => {
+            let scan = run_scan(&path, recursive);
+            run_and_export_report(&scan, output, days, limit, force);
+        }
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// Helper that invokes the scanner and handles top-level filesystem errors.
+fn run_scan(path: &Path, recursive: bool) -> ScanResult {
+    println!(
+        "CleanSweep - Scanning: \"{}\" [Mode: {}]...",
+        path.display(),
+        if recursive {
+            "Recursive"
+        } else {
+            "Single Folder"
+        }
+    );
 
-    #[test]
-    fn test_format_size_bytes() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(500), "500 B");
-        assert_eq!(format_size(1023), "1023 B");
+    let options = ScanOptions { recursive };
+    match scan_directory(path, &options) {
+        Ok(result) => result,
+        Err(err) => {
+            eprintln!("Error scanning '{}': {err}", path.display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn print_scan_overview(scan: &ScanResult, limit: usize) {
+    println!("\n--- Storage Overview ---");
+    println!("  Total regular files:   {}", scan.stats.total_files);
+    println!("  Directories inspected: {}", scan.stats.total_dirs);
+    println!(
+        "  Total storage:         {}",
+        format_size(scan.stats.total_size)
+    );
+    if scan.stats.skipped_symlinks > 0 {
+        println!("  Skipped symlinks:      {}", scan.stats.skipped_symlinks);
+    }
+    if scan.stats.skipped_errors > 0 {
+        println!("  Skipped read errors:   {}", scan.stats.skipped_errors);
     }
 
-    #[test]
-    fn test_format_size_kilobytes() {
-        assert_eq!(format_size(1024), "1.00 KB");
-        assert_eq!(format_size(1536), "1.50 KB");
-        assert_eq!(format_size(1024 * 1023), "1023.00 KB");
+    if scan.files.is_empty() {
+        println!("\nNo regular files found.");
+        return;
     }
 
-    #[test]
-    fn test_format_size_megabytes() {
-        assert_eq!(format_size(1024 * 1024), "1.00 MB");
-        assert_eq!(format_size(5 * 1024 * 1024), "5.00 MB");
+    println!("\nTop {} largest file(s):", limit.min(scan.files.len()));
+    let largest = get_largest_files(scan.files.clone(), limit);
+    for (idx, file) in largest.iter().enumerate() {
+        println!(
+            "  {:>2}. {:>10}  {}",
+            idx + 1,
+            format_size(file.size),
+            file.name
+        );
+        println!("      Path: {}", file.path.display());
+    }
+}
+
+fn print_largest_files(scan: &ScanResult, limit: usize) {
+    if scan.files.is_empty() {
+        println!(
+            "\nNo regular files found in '{}'.",
+            scan.root_path.display()
+        );
+        return;
     }
 
-    #[test]
-    fn test_format_size_gigabytes() {
-        assert_eq!(format_size(1024 * 1024 * 1024), "1.00 GB");
-        assert_eq!(format_size(2 * 1024 * 1024 * 1024 + 536_870_912), "2.50 GB");
+    let largest = get_largest_files(scan.files.clone(), limit);
+    let count = largest.len();
+
+    println!(
+        "\nFound {} file(s) across {} (showing top {} largest):\n",
+        scan.stats.total_files,
+        format_size(scan.stats.total_size),
+        count
+    );
+
+    for (idx, file) in largest.iter().enumerate() {
+        println!(
+            "  {:>2}. {:>10}  {}",
+            idx + 1,
+            format_size(file.size),
+            file.name
+        );
+        println!("      Path: {}", file.path.display());
+    }
+}
+
+fn print_duplicates(scan: &ScanResult) {
+    println!("\nAnalyzing files for duplicates by comparing SHA-256 contents...");
+    let report = duplicates::find_duplicates(&scan.files);
+
+    if report.groups.is_empty() {
+        println!("No duplicate files detected! All files have distinct contents.");
+        if report.empty_files_count > 0 {
+            println!(
+                "Note: Found {} empty (0-byte) file(s).",
+                report.empty_files_count
+            );
+        }
+        return;
     }
 
-    #[test]
-    fn test_format_size_terabytes() {
-        assert_eq!(format_size(1024 * 1024 * 1024 * 1024), "1.00 TB");
+    println!(
+        "\nIdentified {} duplicate group(s) across {} redundant files.",
+        report.groups.len(),
+        report.total_duplicate_files
+    );
+    println!(
+        "Estimated reclaimable storage: {}\n",
+        format_size(report.total_reclaimable_bytes)
+    );
+
+    for (idx, group) in report.groups.iter().enumerate() {
+        println!(
+            "Group #{} — Each file: {} ({} copies, reclaimable: {})",
+            idx + 1,
+            format_size(group.file_size),
+            group.files.len(),
+            format_size(group.reclaimable_bytes())
+        );
+        for (f_idx, path) in group.files.iter().enumerate() {
+            let tag = if f_idx == 0 { "[Keep]" } else { "[Copy]" };
+            println!("  {} {}", tag, path.display());
+        }
+        println!();
+    }
+
+    println!(
+        "Safety Notice: CleanSweep never deletes files. Review paths manually before deleting."
+    );
+}
+
+fn print_file_types(scan: &ScanResult) {
+    if scan.files.is_empty() {
+        println!("\nNo regular files found.");
+        return;
+    }
+
+    let summaries = types::summarize_by_type(&scan.files, scan.stats.total_size);
+
+    println!("\nStorage Usage by File Type:\n");
+    println!("  Extension          Count        Total Size   % of Total");
+    println!("  ---------------------------------------------------------------");
+    for s in summaries {
+        println!(
+            "  .{:<15}  {:>7}  {:>14}  {:>10.2}%",
+            s.extension,
+            s.count,
+            format_size(s.total_size),
+            s.percentage
+        );
+    }
+    println!("\nNote: File extensions do not guarantee the underlying format.");
+}
+
+fn print_old_files(scan: &ScanResult, days: u64, limit: usize) {
+    if scan.files.is_empty() {
+        println!("\nNo regular files found.");
+        return;
+    }
+
+    let summary = age::find_old_files(&scan.files, days);
+
+    println!("\nFile-Age Analysis (Threshold: >= {} days):\n", days);
+    println!("  Files identified:  {}", summary.files.len());
+    println!("  Total storage:     {}", format_size(summary.total_size));
+
+    if summary.skipped_timestamp_errors > 0 {
+        println!(
+            "  Skipped (future/unavailable timestamp): {}",
+            summary.skipped_timestamp_errors
+        );
+    }
+
+    if summary.files.is_empty() {
+        println!("\nNo files older than {} days found.", days);
+        return;
+    }
+
+    let count = summary.files.len().min(limit);
+    println!("\nTop {} largest old file(s):", count);
+    for (idx, file) in summary.files.iter().take(count).enumerate() {
+        println!(
+            "  {:>2}. {:>10}  ({} days old)  {}",
+            idx + 1,
+            format_size(file.size),
+            file.age_days,
+            file.name
+        );
+        println!("      Path: {}", file.path.display());
+    }
+
+    println!("\nSafety Notice: Files are categorized as old, NOT safe to delete.");
+}
+
+fn run_and_export_report(
+    scan: &ScanResult,
+    output: Option<PathBuf>,
+    days: u64,
+    limit: usize,
+    force: bool,
+) {
+    println!("\nGenerating comprehensive analysis report...");
+
+    let dup_report = duplicates::find_duplicates(&scan.files);
+    let type_summaries = types::summarize_by_type(&scan.files, scan.stats.total_size);
+    let old_summary = age::find_old_files(&scan.files, days);
+
+    let report_text = report::generate_report_content(
+        scan,
+        limit,
+        &dup_report,
+        &type_summaries,
+        Some(&old_summary),
+    );
+
+    let default_name = format!(
+        "cleansweep-report-{}.txt",
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
+    let target_path = output.unwrap_or_else(|| PathBuf::from("reports").join(default_name));
+
+    match report::export_report(&report_text, &target_path, force) {
+        Ok(saved_path) => {
+            println!("Report exported successfully to: {}", saved_path.display());
+            println!("Summary:");
+            println!("  Files inspected: {}", scan.stats.total_files);
+            println!("  Total storage:   {}", format_size(scan.stats.total_size));
+            println!(
+                "  Duplicate space: {}",
+                format_size(dup_report.total_reclaimable_bytes)
+            );
+        }
+        Err(err) => {
+            eprintln!("Failed to export report: {err}");
+            std::process::exit(1);
+        }
     }
 }
