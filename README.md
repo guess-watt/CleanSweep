@@ -2,28 +2,40 @@
 
 CleanSweep is a fast, safe, beginner-friendly Windows CLI storage analyzer written in Rust. It helps you inspect disk usage, discover large files, and detect duplicates without modifying, moving, or deleting any files.
 
-## Project Status: Phase 1 — Verified Starting Point
+## Project Status: Phase 2 — Proper Folder Scanning
 
-The project has been inspected and stabilized. The baseline single-directory scanner functions correctly and passes all format and linter checks.
+CleanSweep accepts any user-supplied folder path, validates its existence and directory status, lists regular files with formatted sizes (B, KB, MB, GB, TB), safely skips symbolic links by default, and gracefully handles errors.
 
 ## Prerequisites
 
 - [Rust & Cargo](https://www.rust-lang.org/tools/install) (Rust 1.85+ / 2024 edition compatible)
 - Windows (prioritized) with C++ build tools
 
-## Quick Start
+## Usage
 
-Run the scanner in development mode:
+Scan a specific folder:
 
 ```powershell
-cargo run
+cargo run -- "C:\Users\anwin\Downloads"
 ```
 
-Run linter and formatting checks:
+Scan the current working directory:
+
+```powershell
+cargo run -- .
+```
+
+View help and usage information:
+
+```powershell
+cargo run -- --help
+```
+
+Run linter, formatting checks, and automated tests:
 
 ```powershell
 cargo fmt --check
-cargo clippy
+cargo clippy -- -D warnings
 cargo test
 ```
 
